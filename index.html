@@ -155,7 +155,7 @@
   <button class="btn-connect" id="btnConnect" disabled>Connect Drive</button>
   <div class="field" style="grid-column:1/-1;display:grid;grid-template-columns:1fr auto;gap:0.75rem;align-items:end;padding-top:0.5rem;border-top:1px solid var(--border);margin-top:0.25rem;">
     <div>
-      <label style="font-size:0.58rem;text-transform:uppercase;letter-spacing:0.12em;color:var(--muted);display:block;margin-bottom:0.3rem;">Ollama URL <span style="color:var(--muted2)">(optional fallback · gemma3:12b)</span></label>
+      <label style="font-size:0.58rem;text-transform:uppercase;letter-spacing:0.12em;color:var(--muted);display:block;margin-bottom:0.3rem;">Ollama URL <span style="color:var(--muted2)">(optional fallback · llama3.2-vision)</span></label>
       <input type="text" id="cfgOllama" placeholder="http://localhost:11434" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:0.45rem 0.7rem;color:var(--text);font-family:'DM Mono',monospace;font-size:0.75rem;outline:none;" />
     </div>
     <button id="btnTestOllama" style="height:34px;padding:0 1rem;background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:4px;font-family:'DM Mono',monospace;font-size:0.72rem;cursor:pointer;white-space:nowrap;transition:all 0.2s;" onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">Test connection</button>
@@ -305,14 +305,14 @@ async function callOllama(imageB64, prompt){
   const base = (ollamaEl?.value||'').trim().replace(/\/+$/,'');
   if(!base) throw new Error('No Ollama URL configured');
 
-  progTxt.textContent='Trying Ollama gemma3:12b (local)...';
+  progTxt.textContent='Trying Ollama llama3.2-vision (local)...';
   console.log('[Ollama] calling', base);
 
   const resp = await fetch(`${base}/api/generate`, {
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({
-      model: 'gemma3:12b',
+      model: 'llama3.2-vision',
       prompt: prompt,
       images: [imageB64],   // Ollama vision: base64 array
       stream: false,
@@ -328,7 +328,7 @@ async function callOllama(imageB64, prompt){
   const raw = data.response||'';
   if(!raw) throw new Error('Ollama returned empty response');
   console.log('[Ollama raw response]', raw);
-  return { raw, model:'ollama/gemma3:12b' };
+  return { raw, model:'ollama/llama3.2-vision' };
 }
 
 async function testOllamaConnection(){
@@ -345,10 +345,10 @@ async function testOllamaConnection(){
     const hasGemma = models.some(m=>m.includes('gemma3'));
     if(hasGemma){
       $('pillOllama').className='pill ok';
-      toast('Ollama connected — gemma3:12b ready ✓','ok');
+      toast('Ollama connected — llama3.2-vision ready ✓','ok');
     } else {
       $('pillOllama').className='pill';
-      toast('Ollama connected but gemma3:12b not found. Run: ollama pull gemma3:12b','warn');
+      toast('Ollama connected but llama3.2-vision not found. Run: ollama pull llama3.2-vision','warn');
     }
     localStorage.setItem(STORAGE_KEYS.ollama, base);
   }catch(e){
@@ -641,16 +641,10 @@ Rules:
 - For salary or money received: type "income", category "Income"
 - Include every transaction visible in the screenshot`;
 
-    let raw, model;
-    if(scanMode==='ollama'){
-      // Ollama-only: no Gemini fallback (user explicitly chose local)
-      const result=await callOllama(imgB64,prompt);
-      raw=result.raw; model=result.model;
-    } else {
-      // Gemini with fallback chain (+ Ollama at end if configured)
-      const result=await callGeminiWithFallback(prompt,imgB64,imgMime);
-      raw=result.raw; model=result.model;
-    }
+    const result = scanMode==='ollama'
+      ? await callOllama(imgB64,prompt)
+      : await callGeminiWithFallback(prompt,imgB64,imgMime);
+    const raw=result.raw, model=result.model;
     if(result.truncated){
       toast(`⚠ ${model} response was truncated — some transactions may be missing. Try splitting the screenshot.`,'warn');
     } else {
@@ -835,7 +829,7 @@ document.addEventListener('DOMContentLoaded',()=>{
       toggle.classList.add('ollama');
       document.getElementById('btnScanLabel').textContent='Scan with Ollama';
       document.getElementById('btnScanToggleIcon').textContent='🏠';
-      document.getElementById('scanModeTip').textContent='Using Ollama/gemma3:12b (local) · click 🏠 to switch';
+      document.getElementById('scanModeTip').textContent='Using Ollama/llama3.2-vision (local) · click 🏠 to switch';
       document.getElementById('scanModeTip').style.color='var(--purple)';
     } else {
       scanMode='gemini';
