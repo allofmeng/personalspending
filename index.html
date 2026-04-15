@@ -316,7 +316,7 @@ async function callOllama(imageB64, prompt){
       prompt: prompt,
       images: [imageB64],   // Ollama vision: base64 array
       stream: false,
-      options:{ temperature:0.1 }
+      options:{ temperature:0.1, num_predict:8192 }
     })
   });
 
@@ -355,6 +355,38 @@ async function testOllamaConnection(){
     $('pillOllama').className='pill';
     toast('Ollama not reachable: '+e.message,'err');
   } finally { btn.textContent='Test connection'; }
+}
+
+// ── TRUNCATED JSON REPAIR ────────────────────────────────────
+function repairTruncatedJSON(raw){
+  try{
+    // Strip fences
+    let s=raw.replace(/```json\s*/gi,'').replace(/```\s*/g,'').trim();
+    const start=s.indexOf('[');
+    if(start===-1) return null;
+    s=s.slice(start);
+
+    // Count open/close braces to find where it cut off
+    let depth=0, lastCompleteObj=-1;
+    for(let i=0;i<s.length;i++){
+      if(s[i]==='{') depth++;
+      if(s[i]==='}'){
+        depth--;
+        if(depth===0) lastCompleteObj=i; // end of a complete top-level object
+      }
+    }
+
+    if(lastCompleteObj===-1) return null;
+
+    // Slice to last complete object and close the array
+    const repaired=s.slice(0,lastCompleteObj+1)+']';
+    JSON.parse(repaired); // validate
+    console.log('[repair] salvaged truncated response, closed array after last complete object');
+    return repaired;
+  }catch(e){
+    console.warn('[repair] could not repair truncated JSON:',e.message);
+    return null;
+  }
 }
 
 // ── ROBUST JSON EXTRACTOR ─────────────────────────────────────
@@ -421,7 +453,7 @@ async function callGeminiWithFallback(prompt, imageB64, imageMime){
           {method:'POST',headers:{'Content-Type':'application/json'},
            body:JSON.stringify({
              contents:[{parts:[{text:prompt},{inline_data:{mime_type:imageMime,data:imageB64}}]}],
-             generationConfig:{temperature:0.1,maxOutputTokens:1500}
+             generationConfig:{temperature:0.1,maxOutputTokens:8192}
            })}
         );
         if(!resp.ok){
@@ -440,8 +472,19 @@ async function callGeminiWithFallback(prompt, imageB64, imageMime){
           throw new Error(msg);
         }
         const data=await resp.json();
-        const raw=data.candidates?.[0]?.content?.parts?.[0]?.text||'';
+        const candidate=data.candidates?.[0];
+        const raw=candidate?.content?.parts?.[0]?.text||'';
         if(!raw) throw new Error('Empty response from model');
+
+        // check if response was cut short
+        const finishReason=candidate?.finishReason||'';
+        if(finishReason==='MAX_TOKENS'){
+          // response truncated — try to salvage by closing the JSON array
+          console.warn('[Gemini] response truncated (MAX_TOKENS), attempting to repair...');
+          const repaired=repairTruncatedJSON(raw);
+          if(repaired) return {raw:repaired, model, truncated:true};
+          throw new Error('Response was cut short and could not be repaired. Try a screenshot with fewer transactions.');
+        }
         return {raw, model};
       }catch(err){
         if(attempt<RETRIES&&(err.message.includes('demand')||err.message.includes('overload')||err.message.includes('quota'))){
@@ -608,7 +651,11 @@ Rules:
       const result=await callGeminiWithFallback(prompt,imgB64,imgMime);
       raw=result.raw; model=result.model;
     }
-    toast(`Scanned with ${model}`,'ok');
+    if(result.truncated){
+      toast(`⚠ ${model} response was truncated — some transactions may be missing. Try splitting the screenshot.`,'warn');
+    } else {
+      toast(`Scanned with ${model}`,'ok');
+    }
 
     // robust JSON parse
     scanned=extractJSON(raw);
