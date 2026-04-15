@@ -55,9 +55,17 @@
     .date-row input[type=date] { background:var(--surface); border:1px solid var(--border); border-radius:4px; padding:0.4rem 0.6rem; color:var(--text); font-family:'DM Mono',monospace; font-size:0.72rem; outline:none; width:100%; transition:border-color 0.2s; }
     .date-row input[type=date]:focus { border-color:var(--accent); }
     .date-row input[type=date]::-webkit-calendar-picker-indicator { filter:invert(0.5); }
-    .btn-scan { padding:0.8rem; background:var(--accent); color:#0b0d0f; border:none; border-radius:6px; font-family:'Fraunces',serif; font-size:1rem; font-weight:600; cursor:pointer; transition:opacity 0.2s; display:flex; align-items:center; justify-content:center; gap:0.4rem; }
+    /* split scan button */
+    .scan-wrap { display:flex; border-radius:6px; overflow:hidden; }
+    .btn-scan { flex:1; padding:0.8rem 1rem; background:var(--accent); color:#0b0d0f; border:none; font-family:'Fraunces',serif; font-size:1rem; font-weight:600; cursor:pointer; transition:opacity 0.2s; display:flex; align-items:center; justify-content:center; gap:0.4rem; }
     .btn-scan:hover { opacity:0.88; }
     .btn-scan:disabled { opacity:0.3; cursor:not-allowed; }
+    .btn-scan-toggle { width:42px; background:var(--accent); color:#0b0d0f; border:none; border-left:1.5px solid rgba(0,0,0,0.2); cursor:pointer; font-size:0.75rem; display:flex; align-items:center; justify-content:center; transition:opacity 0.2s; flex-shrink:0; position:relative; }
+    .btn-scan-toggle:hover { opacity:0.85; }
+    .btn-scan-toggle:disabled { opacity:0.3; cursor:not-allowed; }
+    .btn-scan-toggle.ollama { background:var(--purple); border-left-color:rgba(0,0,0,0.2); }
+    .btn-scan.ollama { background:var(--purple); }
+    .scan-mode-tip { font-size:0.6rem; color:var(--muted); text-align:center; margin-top:0.3rem; }
     .progress { display:none; flex-direction:column; gap:0.4rem; }
     .progress.on { display:flex; }
     .prog-track { height:2px; background:var(--border); border-radius:2px; overflow:hidden; }
@@ -182,7 +190,15 @@
       Fix: start Ollama with <code style="color:var(--accent)">OLLAMA_ORIGINS=https://yourusername.github.io ollama serve</code><br/>
       Or run the app locally via <code style="color:var(--accent)">python3 -m http.server</code> for Ollama to work.
     </div>
-    <button class="btn-scan" id="btnScan" disabled><span>Scan with Gemini</span><span>→</span></button>
+    <div class="scan-wrap">
+      <button class="btn-scan" id="btnScan" disabled>
+        <span id="btnScanLabel">Scan with Gemini</span><span>→</span>
+      </button>
+      <button class="btn-scan-toggle" id="btnScanToggle" title="Switch scan engine">
+        <span id="btnScanToggleIcon">🤖</span>
+      </button>
+    </div>
+    <div class="scan-mode-tip" id="scanModeTip">Using Gemini (cloud) · click 🤖 to switch</div>
     <button id="btnRestore" style="display:none;padding:0.45rem 1rem;background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:5px;font-family:'DM Mono',monospace;font-size:0.7rem;cursor:pointer;transition:border-color 0.2s,color 0.2s;" onmouseover="this.style.borderColor='var(--yellow)';this.style.color='var(--yellow)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">↩ restore last scan</button>
     <div class="progress" id="progress">
       <div class="prog-track"><div class="prog-fill"></div></div>
@@ -229,7 +245,7 @@
 <script>
 const CATS=['Bills','Subscriptions','Entertainment','Food & Drink','Groceries','Health & Wellbeing','Savings','Shopping','Transport','Travel','Business','Gifts','Income'];
 const CAT_ICON={Bills:'🏠',Subscriptions:'📺',Entertainment:'🎬','Food & Drink':'🍜',Groceries:'🛒','Health & Wellbeing':'💊',Savings:'🏦',Shopping:'🛍️',Transport:'🚌',Travel:'✈️',Business:'💼',Gifts:'🎁',Income:'💰'};
-let imgB64=null,imgMime='image/jpeg',scanned=[],existingRows=[],accessToken=null,tokenClient=null;
+let imgB64=null,imgMime='image/jpeg',scanned=[],existingRows=[],accessToken=null,tokenClient=null,scanMode='gemini';
 const $=id=>document.getElementById(id);
 const cfgGemini=$('cfgGemini'),cfgClient=$('cfgClient'),cfgSheet=$('cfgSheet'),btnConnect=$('btnConnect'),btnScan=$('btnScan');
 const dropzone=$('dropzone'),fileInp=$('fileInp'),previewWrap=$('previewWrap'),previewImg=$('previewImg'),btnRemove=$('btnRemove');
@@ -254,7 +270,16 @@ function onConfig(){
     if(ollamaEl&&ollamaEl.value)localStorage.setItem(STORAGE_KEYS.ollama,ollamaEl.value);
   }catch(e){}
 }
-function updateScanBtn(){btnScan.disabled=!(imgB64&&cfgGemini.value.startsWith('AIza'));}
+function updateScanBtn(){
+  const ollamaEl=document.getElementById('cfgOllama');
+  const ollamaReady=ollamaEl&&ollamaEl.value.trim().length>0;
+  const geminiReady=cfgGemini.value.startsWith('AIza');
+  if(scanMode==='ollama'){
+    btnScan.disabled=!(imgB64&&ollamaReady);
+  } else {
+    btnScan.disabled=!(imgB64&&geminiReady);
+  }
+}
 btnConnect.addEventListener('click',()=>{if(accessToken){revokeAuth();return;}if(!window.google){toast('Google API not loaded yet','err');return;}tokenClient=google.accounts.oauth2.initTokenClient({client_id:cfgClient.value.trim(),scope:'https://www.googleapis.com/auth/spreadsheets',callback:r=>{if(r.error){toast('Auth error: '+r.error,'err');return;}accessToken=r.access_token;$('pillDrive').className='pill ok';btnConnect.textContent='✓ Connected';btnConnect.className='btn-connect connected';btnPush.disabled=false;toast('Connected to Google Sheets!','ok');}});tokenClient.requestAccessToken({prompt:'consent'});});
 function revokeAuth(){if(accessToken)google.accounts.oauth2.revoke(accessToken);accessToken=null;$('pillDrive').className='pill';btnConnect.textContent='Connect Drive';btnConnect.className='btn-connect';btnPush.disabled=true;}
 fileInp.addEventListener('change',e=>loadFile(e.target.files[0]));
@@ -275,7 +300,7 @@ const GEMINI_MODELS=[
 ];
 
 // ── OLLAMA CALLER ─────────────────────────────────────────────
-async function callOllama(prompt, imageB64){
+async function callOllama(imageB64, prompt){
   const ollamaEl = document.getElementById('cfgOllama');
   const base = (ollamaEl?.value||'').trim().replace(/\/+$/,'');
   if(!base) throw new Error('No Ollama URL configured');
@@ -435,7 +460,7 @@ async function callGeminiWithFallback(prompt, imageB64, imageMime){
   const ollamaEl = document.getElementById('cfgOllama');
   if(ollamaEl?.value.trim()){
     try{
-      return await callOllama(prompt, imageB64);
+      return await callOllama(imageB64, prompt);
     }catch(ollamaErr){
       throw new Error('All Gemini models failed. Ollama also failed: '+ollamaErr.message);
     }
@@ -573,7 +598,16 @@ Rules:
 - For salary or money received: type "income", category "Income"
 - Include every transaction visible in the screenshot`;
 
-    const {raw,model}=await callGeminiWithFallback(prompt,imgB64,imgMime);
+    let raw, model;
+    if(scanMode==='ollama'){
+      // Ollama-only: no Gemini fallback (user explicitly chose local)
+      const result=await callOllama(imgB64,prompt);
+      raw=result.raw; model=result.model;
+    } else {
+      // Gemini with fallback chain (+ Ollama at end if configured)
+      const result=await callGeminiWithFallback(prompt,imgB64,imgMime);
+      raw=result.raw; model=result.model;
+    }
     toast(`Scanned with ${model}`,'ok');
 
     // robust JSON parse
@@ -741,6 +775,31 @@ document.addEventListener('DOMContentLoaded',()=>{
   const ollamaEl=document.getElementById('cfgOllama');
   if(ollamaEl) ollamaEl.addEventListener('input',()=>{
     try{ if(ollamaEl.value) localStorage.setItem(STORAGE_KEYS.ollama,ollamaEl.value); }catch(e){}
+    updateScanBtn();
+  });
+  // Scan mode toggle
+  const toggle=document.getElementById('btnScanToggle');
+  if(toggle) toggle.addEventListener('click',()=>{
+    const ollamaUrl=(document.getElementById('cfgOllama')?.value||'').trim();
+    if(scanMode==='gemini'){
+      if(!ollamaUrl){ toast('Enter an Ollama URL first in the config bar','warn'); return; }
+      scanMode='ollama';
+      document.getElementById('btnScan').classList.add('ollama');
+      toggle.classList.add('ollama');
+      document.getElementById('btnScanLabel').textContent='Scan with Ollama';
+      document.getElementById('btnScanToggleIcon').textContent='🏠';
+      document.getElementById('scanModeTip').textContent='Using Ollama/gemma3:12b (local) · click 🏠 to switch';
+      document.getElementById('scanModeTip').style.color='var(--purple)';
+    } else {
+      scanMode='gemini';
+      document.getElementById('btnScan').classList.remove('ollama');
+      toggle.classList.remove('ollama');
+      document.getElementById('btnScanLabel').textContent='Scan with Gemini';
+      document.getElementById('btnScanToggleIcon').textContent='🤖';
+      document.getElementById('scanModeTip').textContent='Using Gemini (cloud) · click 🤖 to switch';
+      document.getElementById('scanModeTip').style.color='var(--muted)';
+    }
+    updateScanBtn();
   });
   // show restore button if cache exists
   try{const c=JSON.parse(localStorage.getItem(SCAN_CACHE_KEY)||'null');if(c&&Date.now()-c.ts<3600000){const rb=document.getElementById('btnRestore');if(rb)rb.style.display='block';}}catch(e){}
