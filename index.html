@@ -128,6 +128,7 @@
   <div class="pills">
     <div class="pill" id="pillGemini"><div class="dot"></div>Gemini</div>
     <div class="pill" id="pillDrive"><div class="dot"></div>Drive</div>
+    <div class="pill" id="pillOllama"><div class="dot"></div>Ollama</div>
   </div>
 </header>
 <div class="config">
@@ -144,6 +145,13 @@
     <input type="text" id="cfgSheet" placeholder="From your Google Sheet URL" />
   </div>
   <button class="btn-connect" id="btnConnect" disabled>Connect Drive</button>
+  <div class="field" style="grid-column:1/-1;display:grid;grid-template-columns:1fr auto;gap:0.75rem;align-items:end;padding-top:0.5rem;border-top:1px solid var(--border);margin-top:0.25rem;">
+    <div>
+      <label style="font-size:0.58rem;text-transform:uppercase;letter-spacing:0.12em;color:var(--muted);display:block;margin-bottom:0.3rem;">Ollama URL <span style="color:var(--muted2)">(optional fallback · gemma3:12b)</span></label>
+      <input type="text" id="cfgOllama" placeholder="http://localhost:11434" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:0.45rem 0.7rem;color:var(--text);font-family:'DM Mono',monospace;font-size:0.75rem;outline:none;" />
+    </div>
+    <button id="btnTestOllama" style="height:34px;padding:0 1rem;background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:4px;font-family:'DM Mono',monospace;font-size:0.72rem;cursor:pointer;white-space:nowrap;transition:all 0.2s;" onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">Test connection</button>
+  </div>
 </div>
 <main>
   <div class="left">
@@ -167,6 +175,12 @@
         <input type="date" id="dateTo" />
       </div>
       <div style="font-size:0.62rem;color:var(--muted);margin-top:0.4rem">Used to fetch existing entries for duplicate check</div>
+    </div>
+    <div style="font-size:0.6rem;color:var(--muted2);line-height:1.8;padding:0.6rem 0.75rem;background:var(--surface);border-radius:5px;border:1px solid var(--border);">
+      <strong style="color:var(--muted);display:block;margin-bottom:0.2rem;">⚠ Ollama + HTTPS note</strong>
+      GitHub Pages is HTTPS. Browsers block calls to <code style="color:var(--accent)">http://localhost</code> from HTTPS pages.<br/>
+      Fix: start Ollama with <code style="color:var(--accent)">OLLAMA_ORIGINS=https://yourusername.github.io ollama serve</code><br/>
+      Or run the app locally via <code style="color:var(--accent)">python3 -m http.server</code> for Ollama to work.
     </div>
     <button class="btn-scan" id="btnScan" disabled><span>Scan with Gemini</span><span>→</span></button>
     <button id="btnRestore" style="display:none;padding:0.45rem 1rem;background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:5px;font-family:'DM Mono',monospace;font-size:0.7rem;cursor:pointer;transition:border-color 0.2s,color 0.2s;" onmouseover="this.style.borderColor='var(--yellow)';this.style.color='var(--yellow)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">↩ restore last scan</button>
@@ -224,10 +238,22 @@ const emptyState=$('emptyState'),results=$('results'),dupBanner=$('dupBanner'),d
 const btnPush=$('btnPush'),btnCsv=$('btnCsv'),pushCount=$('pushCount'),txList=$('txList'),sumGrid=$('sumGrid');
 (function(){const n=new Date(),y=n.getFullYear(),m=String(n.getMonth()+1).padStart(2,'0');dateFrom.value=`${y}-${m}-01`;const l=new Date(y,n.getMonth()+1,0).getDate();dateTo.value=`${y}-${m}-${String(l).padStart(2,'0')}`;})();
 // localStorage persistence
-const STORAGE_KEYS={gemini:'expense_gemini',client:'expense_client',sheet:'expense_sheet'};
-(function loadSaved(){try{const g=localStorage.getItem(STORAGE_KEYS.gemini),c=localStorage.getItem(STORAGE_KEYS.client),s=localStorage.getItem(STORAGE_KEYS.sheet);if(g)cfgGemini.value=g;if(c)cfgClient.value=c;if(s)cfgSheet.value=s;if(g||c||s){onConfig();}}catch(e){}})();
+const STORAGE_KEYS={gemini:'expense_gemini',client:'expense_client',sheet:'expense_sheet',ollama:'expense_ollama'};
+(function loadSaved(){try{const g=localStorage.getItem(STORAGE_KEYS.gemini),c=localStorage.getItem(STORAGE_KEYS.client),s=localStorage.getItem(STORAGE_KEYS.sheet),o=localStorage.getItem(STORAGE_KEYS.ollama);if(g)cfgGemini.value=g;if(c)cfgClient.value=c;if(s)cfgSheet.value=s;if(o&&document.getElementById('cfgOllama'))document.getElementById('cfgOllama').value=o;if(g||c||s){onConfig();}}catch(e){}})();
 [cfgGemini,cfgClient,cfgSheet].forEach(el=>el.addEventListener('input',onConfig));
-function onConfig(){$('pillGemini').className='pill'+(cfgGemini.value.startsWith('AIza')?' ok':'');btnConnect.disabled=!(cfgClient.value.includes('.apps.')&&cfgSheet.value.trim().length>10);updateScanBtn();if(cfgSheet.value.trim())$('footerInfo').textContent='sheet: '+cfgSheet.value.trim().slice(0,22)+'…';try{if(cfgGemini.value)localStorage.setItem(STORAGE_KEYS.gemini,cfgGemini.value);if(cfgClient.value)localStorage.setItem(STORAGE_KEYS.client,cfgClient.value);if(cfgSheet.value)localStorage.setItem(STORAGE_KEYS.sheet,cfgSheet.value);}catch(e){}}
+function onConfig(){
+  $('pillGemini').className='pill'+(cfgGemini.value.startsWith('AIza')?' ok':'');
+  btnConnect.disabled=!(cfgClient.value.includes('.apps.')&&cfgSheet.value.trim().length>10);
+  updateScanBtn();
+  if(cfgSheet.value.trim())$('footerInfo').textContent='sheet: '+cfgSheet.value.trim().slice(0,22)+'…';
+  try{
+    if(cfgGemini.value)localStorage.setItem(STORAGE_KEYS.gemini,cfgGemini.value);
+    if(cfgClient.value)localStorage.setItem(STORAGE_KEYS.client,cfgClient.value);
+    if(cfgSheet.value)localStorage.setItem(STORAGE_KEYS.sheet,cfgSheet.value);
+    const ollamaEl=document.getElementById('cfgOllama');
+    if(ollamaEl&&ollamaEl.value)localStorage.setItem(STORAGE_KEYS.ollama,ollamaEl.value);
+  }catch(e){}
+}
 function updateScanBtn(){btnScan.disabled=!(imgB64&&cfgGemini.value.startsWith('AIza'));}
 btnConnect.addEventListener('click',()=>{if(accessToken){revokeAuth();return;}if(!window.google){toast('Google API not loaded yet','err');return;}tokenClient=google.accounts.oauth2.initTokenClient({client_id:cfgClient.value.trim(),scope:'https://www.googleapis.com/auth/spreadsheets',callback:r=>{if(r.error){toast('Auth error: '+r.error,'err');return;}accessToken=r.access_token;$('pillDrive').className='pill ok';btnConnect.textContent='✓ Connected';btnConnect.className='btn-connect connected';btnPush.disabled=false;toast('Connected to Google Sheets!','ok');}});tokenClient.requestAccessToken({prompt:'consent'});});
 function revokeAuth(){if(accessToken)google.accounts.oauth2.revoke(accessToken);accessToken=null;$('pillDrive').className='pill';btnConnect.textContent='Connect Drive';btnConnect.className='btn-connect';btnPush.disabled=true;}
@@ -247,6 +273,64 @@ const GEMINI_MODELS=[
   'gemini-2.5-flash-lite-preview-06-17',
   'gemini-2.0-flash-001'
 ];
+
+// ── OLLAMA CALLER ─────────────────────────────────────────────
+async function callOllama(prompt, imageB64){
+  const ollamaEl = document.getElementById('cfgOllama');
+  const base = (ollamaEl?.value||'').trim().replace(/\/+$/,'');
+  if(!base) throw new Error('No Ollama URL configured');
+
+  progTxt.textContent='Trying Ollama gemma3:12b (local)...';
+  console.log('[Ollama] calling', base);
+
+  const resp = await fetch(`${base}/api/generate`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      model: 'gemma3:12b',
+      prompt: prompt,
+      images: [imageB64],   // Ollama vision: base64 array
+      stream: false,
+      options:{ temperature:0.1 }
+    })
+  });
+
+  if(!resp.ok){
+    const txt = await resp.text();
+    throw new Error(`Ollama HTTP ${resp.status}: ${txt.slice(0,100)}`);
+  }
+  const data = await resp.json();
+  const raw = data.response||'';
+  if(!raw) throw new Error('Ollama returned empty response');
+  console.log('[Ollama raw response]', raw);
+  return { raw, model:'ollama/gemma3:12b' };
+}
+
+async function testOllamaConnection(){
+  const ollamaEl = document.getElementById('cfgOllama');
+  const base = (ollamaEl?.value||'').trim().replace(/\/+$/,'');
+  if(!base){ toast('Enter an Ollama URL first','warn'); return; }
+  const btn = document.getElementById('btnTestOllama');
+  btn.textContent='Testing...';
+  try{
+    const resp = await fetch(`${base}/api/tags`,{signal:AbortSignal.timeout(5000)});
+    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    const data = await resp.json();
+    const models = (data.models||[]).map(m=>m.name);
+    const hasGemma = models.some(m=>m.includes('gemma3'));
+    if(hasGemma){
+      $('pillOllama').className='pill ok';
+      toast('Ollama connected — gemma3:12b ready ✓','ok');
+    } else {
+      $('pillOllama').className='pill';
+      toast('Ollama connected but gemma3:12b not found. Run: ollama pull gemma3:12b','warn');
+    }
+    localStorage.setItem(STORAGE_KEYS.ollama, base);
+  }catch(e){
+    $('pillOllama').className='pill';
+    toast('Ollama not reachable: '+e.message,'err');
+  } finally { btn.textContent='Test connection'; }
+}
 
 // ── ROBUST JSON EXTRACTOR ─────────────────────────────────────
 function extractJSON(raw){
@@ -347,7 +431,16 @@ async function callGeminiWithFallback(prompt, imageB64, imageMime){
       }
     }
   }
-  throw lastErr||new Error('All models failed');
+  // ── ALL GEMINI MODELS FAILED — try Ollama if configured ──
+  const ollamaEl = document.getElementById('cfgOllama');
+  if(ollamaEl?.value.trim()){
+    try{
+      return await callOllama(prompt, imageB64);
+    }catch(ollamaErr){
+      throw new Error('All Gemini models failed. Ollama also failed: '+ollamaErr.message);
+    }
+  }
+  throw lastErr||new Error('All Gemini models failed. Configure Ollama URL as a local fallback.');
 }
 
 // ── SCAN RESULT CACHE ─────────────────────────────────────────
@@ -641,6 +734,14 @@ async function pushToSheets(){if(!accessToken){toast('Connect to Google Sheets f
 btnCsv.addEventListener('click',()=>{const rows=toInclude();if(!rows.length){toast('No new transactions to export','warn');return;}const header='Timestamp,Purchase Date,Item,Amount,Category';const csv=header+'\n'+rows.map(t=>[new Date().toISOString(),t.date||`"${t.description}"`,t.amount,t.category].join(',')).join('\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=`expenses_${dateFrom.value}_${dateTo.value}.csv`;a.click();});
 function toast(msg,type=''){const el=$('toast');el.textContent=msg;el.className='toast on'+(type?' '+type:'');setTimeout(()=>el.className='toast',3500);}
 document.addEventListener('DOMContentLoaded',()=>{
+  // Ollama test button
+  const testBtn=document.getElementById('btnTestOllama');
+  if(testBtn) testBtn.addEventListener('click', testOllamaConnection);
+  // Ollama URL input saves to localStorage
+  const ollamaEl=document.getElementById('cfgOllama');
+  if(ollamaEl) ollamaEl.addEventListener('input',()=>{
+    try{ if(ollamaEl.value) localStorage.setItem(STORAGE_KEYS.ollama,ollamaEl.value); }catch(e){}
+  });
   // show restore button if cache exists
   try{const c=JSON.parse(localStorage.getItem(SCAN_CACHE_KEY)||'null');if(c&&Date.now()-c.ts<3600000){const rb=document.getElementById('btnRestore');if(rb)rb.style.display='block';}}catch(e){}
   const rb=document.getElementById('btnRestore');
