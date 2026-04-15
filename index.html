@@ -45,7 +45,6 @@
     .slabel { font-size:0.58rem; text-transform:uppercase; letter-spacing:0.15em; color:var(--muted); margin-bottom:0.6rem; display:block; }
     .dropzone { border:1.5px dashed var(--border); border-radius:7px; padding:2rem 1.25rem; text-align:center; cursor:pointer; background:var(--surface); position:relative; transition:border-color 0.2s,background 0.2s; }
     .dropzone:hover, .dropzone.over { border-color:var(--accent); background:var(--accent-dim); }
-    .dropzone input { position:absolute; inset:0; opacity:0; cursor:pointer; }
     .dropzone .di { font-size:2rem; display:block; margin-bottom:0.6rem; }
     .dropzone p { font-size:0.72rem; color:var(--muted); line-height:1.7; }
     .dropzone strong { color:var(--text); }
@@ -150,10 +149,11 @@
   <div class="left">
     <div>
       <span class="slabel">01 — Upload Screenshot</span>
+      <!-- hidden file input lives outside the dropzone so click is reliable -->
+      <input type="file" id="fileInp" accept="image/*" style="display:none" />
       <div class="dropzone" id="dropzone">
-        <input type="file" id="fileInp" accept="image/*" />
         <span class="di">📱</span>
-        <p><strong>Drop screenshot here</strong><br/>or click to browse<br/><span style="color:var(--muted2);font-size:0.67rem">Bank app · Payment app · Receipt</span></p>
+        <p><strong>Drop screenshot here</strong><br/>or <span style="color:var(--accent);text-decoration:underline;cursor:pointer">click to browse</span><br/><span style="color:var(--muted2);font-size:0.67rem">Bank app · Payment app · Receipt</span></p>
       </div>
       <div class="preview" id="previewWrap" style="display:none">
         <img id="previewImg" src="" alt="" />
@@ -232,6 +232,8 @@ function updateScanBtn(){btnScan.disabled=!(imgB64&&cfgGemini.value.startsWith('
 btnConnect.addEventListener('click',()=>{if(accessToken){revokeAuth();return;}if(!window.google){toast('Google API not loaded yet','err');return;}tokenClient=google.accounts.oauth2.initTokenClient({client_id:cfgClient.value.trim(),scope:'https://www.googleapis.com/auth/spreadsheets',callback:r=>{if(r.error){toast('Auth error: '+r.error,'err');return;}accessToken=r.access_token;$('pillDrive').className='pill ok';btnConnect.textContent='✓ Connected';btnConnect.className='btn-connect connected';btnPush.disabled=false;toast('Connected to Google Sheets!','ok');}});tokenClient.requestAccessToken({prompt:'consent'});});
 function revokeAuth(){if(accessToken)google.accounts.oauth2.revoke(accessToken);accessToken=null;$('pillDrive').className='pill';btnConnect.textContent='Connect Drive';btnConnect.className='btn-connect';btnPush.disabled=true;}
 fileInp.addEventListener('change',e=>loadFile(e.target.files[0]));
+// Explicit click → open file picker (works on all browsers including mobile)
+dropzone.addEventListener('click',()=>fileInp.click());
 dropzone.addEventListener('dragover',e=>{e.preventDefault();dropzone.classList.add('over');});
 dropzone.addEventListener('dragleave',()=>dropzone.classList.remove('over'));
 dropzone.addEventListener('drop',e=>{e.preventDefault();dropzone.classList.remove('over');loadFile(e.dataTransfer.files[0]);});
