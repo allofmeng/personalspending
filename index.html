@@ -655,8 +655,9 @@ Rules:
     scanned=extractJSON(raw);
     scanned.forEach(t=>{
       t.dupStatus='new';t.forceInclude=false;
-      // sanitise amount
+      // sanitise amount — strip non-numeric chars, then force positive
       if(typeof t.amount==='string') t.amount=parseFloat(t.amount.replace(/[^0-9.]/g,''))||0;
+      t.amount=Math.abs(t.amount);
     });
 
     // cache results so a Sheets push failure doesn't waste the scan
