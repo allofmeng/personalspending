@@ -525,23 +525,29 @@ const SHEET_COLORS={
   'skipped-dup':{red:0.957,green:0.800,blue:0.800} // #f4cccc red
 };
 
-async function colorSheetRows(sheetId, sheetName, rowIndices, status){
-  // rowIndices: 0-based array of row numbers to color
-  if(!rowIndices.length) return;
-  const color = SHEET_COLORS[status];
-  if(!color) return;
-
-  // Get sheetId (numeric) from spreadsheet metadata
-  let numericSheetId = null;
+// Cache numeric sheet IDs to avoid repeated metadata API calls
+const _sheetIdCache={};
+async function getNumericSheetId(sheetId, sheetName){
+  const cacheKey=sheetId+'::'+sheetName.toLowerCase();
+  if(_sheetIdCache[cacheKey]!==undefined) return _sheetIdCache[cacheKey];
   try{
-    const meta = await fetch(
+    const meta=await fetch(
       `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=sheets.properties`,
       {headers:{Authorization:`Bearer ${accessToken}`}}
     );
-    const metaData = await meta.json();
-    const sheet = (metaData.sheets||[]).find(s=>s.properties.title.toLowerCase()===sheetName.toLowerCase());
-    if(sheet) numericSheetId = sheet.properties.sheetId;
-  }catch(e){ console.warn('Could not get sheetId for coloring:', e.message); return; }
+    const metaData=await meta.json();
+    const sheet=(metaData.sheets||[]).find(s=>s.properties.title.toLowerCase()===sheetName.toLowerCase());
+    const id=sheet ? sheet.properties.sheetId : null;
+    _sheetIdCache[cacheKey]=id;
+    return id;
+  }catch(e){ console.warn('Could not get numeric sheetId:',e.message); return null; }
+}
+
+async function colorSheetRows(sheetId, sheetName, rowIndices, status){
+  if(!rowIndices.length) return;
+  const color = SHEET_COLORS[status];
+  if(!color) return;
+  const numericSheetId = await getNumericSheetId(sheetId, sheetName);
   if(numericSheetId===null) return;
 
   const requests = rowIndices.map(rowIdx=>({
@@ -587,24 +593,25 @@ async function saveToRawScan(transactions, modelUsed){
       tx.category||'',                                // Category
       'pending'                                       // Status
     ]);
+    // Count existing rows first so we know exactly which rows are new after append
+    let firstNewRow = 1;
+    try{
+      const countResp=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/rawscan!A:A`,{headers:{Authorization:`Bearer ${accessToken}`}});
+      const countData=await countResp.json();
+      firstNewRow=(countData.values||[]).length+1;
+    }catch(e){}
+
     const resp=await fetch(
       `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/rawscan!A:J:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
       {method:'POST',
        headers:{Authorization:`Bearer ${accessToken}`,'Content-Type':'application/json'},
-       body:JSON.stringify({
-         majorDimension:'ROWS',
-         values:[
-           // header row only on very first write (Sheets ignores if rows exist)
-           ...rows
-         ]
-       })}
+       body:JSON.stringify({majorDimension:'ROWS',values:rows})}
     );
     const data=await resp.json();
     if(data.error){
-      // If sheet doesn't exist, create it then retry
       if(data.error.message&&data.error.message.includes('Unable to parse range')){
         await createRawScanSheet(sheetId);
-        // retry once
+        firstNewRow=1;
         await fetch(
           `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/rawscan!A:J:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
           {method:'POST',
@@ -613,16 +620,9 @@ async function saveToRawScan(transactions, modelUsed){
         );
       }
     }
-    // Color new rawscan rows orange (pending)
-    const appendedRange = data?.updates?.updatedRange||'';
-    // updatedRange looks like "rawscan!A5:J9" — extract start row
-    const rangeMatch = appendedRange.match(/!(\w+)(\d+):(\w+)(\d+)/);
-    if(rangeMatch){
-      const startRow = parseInt(rangeMatch[2])-1; // 0-based
-      const endRow   = parseInt(rangeMatch[4]);
-      const rowIdxs  = Array.from({length:endRow-startRow},(_,i)=>startRow+i);
-      colorSheetRows(sheetId,'rawscan',rowIdxs,'pending').catch(()=>{});
-    }
+    // Color new rows orange (pending) — use pre-counted position, not API response
+    const rowIdxs=Array.from({length:rows.length},(_,i)=>firstNewRow-1+i);
+    colorSheetRows(sheetId,'rawscan',rowIdxs,'pending').catch(()=>{});
     return scanId;
   }catch(e){
     console.warn('RawScan backup failed (non-critical):',e.message);
@@ -883,15 +883,9 @@ function toInclude(){return scanned.filter(t=>t.dupStatus==='new'||t.forceInclud
 function updatePushCount(){const n=toInclude().length,dup=scanned.length-n;pushCount.textContent=`${n} new transaction${n!==1?'s':''} to push${dup>0?' · '+dup+' excluded':''}`;}
 function renderSummary(){const inc=toInclude(),totals={};CATS.forEach(c=>totals[c]=0);inc.forEach(t=>{if(totals[t.category]!==undefined)totals[t.category]+=t.amount;});sumGrid.innerHTML='';CATS.forEach(c=>{if(!totals[c])return;const d=document.createElement('div');d.className='sum-row';d.innerHTML=`<span class="k">${c}</span><span class="v">$${totals[c].toFixed(2)}</span>`;sumGrid.appendChild(d);});if(!sumGrid.children.length)sumGrid.innerHTML='<div class="sum-row"><span class="k" style="color:var(--muted2)">No new transactions</span></div>';updatePushCount();}
 btnPush.addEventListener('click',pushToSheets);
-async function pushToSheets(){if(!accessToken){toast('Connect to Google Sheets first','err');return;}const sheetId=cfgSheet.value.trim(),rows=toInclude();if(!rows.length){toast('No new transactions to push','warn');return;}btnPush.disabled=true;btnPush.textContent='↑ Pushing...';try{const now=new Date(),tsSerial=(now-new Date(1899,11,30))/86400000;const values=rows.map(tx=>{const d=tx.date?new Date(tx.date):now;const dateSerial=(d-new Date(1899,11,30))/86400000;return[tsSerial,dateSerial,tx.description,tx.amount,tx.category,tx.datetime||tx.date||''];});const resp=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Expenses!A:F:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,{method:'POST',headers:{Authorization:`Bearer ${accessToken}`,'Content-Type':'application/json'},body:JSON.stringify({majorDimension:'ROWS',values})});const data=await resp.json();if(data.error)throw new Error(data.error.message);// Color pushed Expenses rows green
-    const expRange = pushData?.updates?.updatedRange||'';
-    const expMatch = expRange.match(/!\w+(\d+):\w+(\d+)/);
-    if(expMatch){
-      const startRow = parseInt(expMatch[1])-1;
-      const endRow   = parseInt(expMatch[2]);
-      const rowIdxs  = Array.from({length:endRow-startRow},(_,i)=>startRow+i);
-      colorSheetRows(sheetId,'Expenses',rowIdxs,'pushed').catch(()=>{});
-    }
+async function pushToSheets(){if(!accessToken){toast('Connect to Google Sheets first','err');return;}const sheetId=cfgSheet.value.trim(),rows=toInclude();if(!rows.length){toast('No new transactions to push','warn');return;}btnPush.disabled=true;btnPush.textContent='↑ Pushing...';try{const now=new Date(),tsSerial=(now-new Date(1899,11,30))/86400000;const values=rows.map(tx=>{const d=tx.date?new Date(tx.date):now;const dateSerial=(d-new Date(1899,11,30))/86400000;return[tsSerial,dateSerial,tx.description,tx.amount,tx.category,tx.datetime||tx.date||''];});let expFirstRow=1;try{const ec=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Expenses!A:A`,{headers:{Authorization:`Bearer ${accessToken}`}});const ed=await ec.json();expFirstRow=(ed.values||[]).length+1;}catch(e){}const resp=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Expenses!A:F:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,{method:'POST',headers:{Authorization:`Bearer ${accessToken}`,'Content-Type':'application/json'},body:JSON.stringify({majorDimension:'ROWS',values})});const pushData=await resp.json();if(pushData.error)throw new Error(pushData.error.message);// Color pushed Expenses rows green using pre-counted row position
+    const expRowIdxs=Array.from({length:values.length},(_,i)=>expFirstRow-1+i);
+    colorSheetRows(sheetId,'Expenses',expRowIdxs,'pushed').catch(()=>{});
     toast(`✓ Pushed ${rows.length} transaction${rows.length!==1?'s':''} to Expenses sheet`,'ok');
       clearScanCache();
       if(window._lastScanId){
