@@ -538,7 +538,7 @@ async function saveToRawScan(transactions, modelUsed){
       'pending'                                       // Status
     ]);
     const resp=await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/RawScan!A:J:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/rawscan!A:J:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
       {method:'POST',
        headers:{Authorization:`Bearer ${accessToken}`,'Content-Type':'application/json'},
        body:JSON.stringify({
@@ -556,7 +556,7 @@ async function saveToRawScan(transactions, modelUsed){
         await createRawScanSheet(sheetId);
         // retry once
         await fetch(
-          `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/RawScan!A:J:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+          `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/rawscan!A:J:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
           {method:'POST',
            headers:{Authorization:`Bearer ${accessToken}`,'Content-Type':'application/json'},
            body:JSON.stringify({majorDimension:'ROWS',values:rows})}
@@ -575,11 +575,11 @@ async function createRawScanSheet(sheetId){
     `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`,
     {method:'POST',
      headers:{Authorization:`Bearer ${accessToken}`,'Content-Type':'application/json'},
-     body:JSON.stringify({requests:[{addSheet:{properties:{title:'RawScan'}}}]})}
+     body:JSON.stringify({requests:[{addSheet:{properties:{title:'rawscan'}}}]})}
   );
   // Write header row
   await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/RawScan!A1:I1?valueInputOption=USER_ENTERED`,
+    `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/rawscan!A1:I1?valueInputOption=USER_ENTERED`,
     {method:'PUT',
      headers:{Authorization:`Bearer ${accessToken}`,'Content-Type':'application/json'},
      body:JSON.stringify({majorDimension:'ROWS',values:[
@@ -589,13 +589,13 @@ async function createRawScanSheet(sheetId){
 }
 
 // Update RawScan status column for pushed rows
-async function updateRawScanStatus(scanId, status){
+async function updateRawScanStatus(scanId, status, itemFilter=null){
   if(!accessToken||!scanId||!cfgSheet.value.trim()) return;
   const sheetId=cfgSheet.value.trim();
   try{
     // Find rows with this scanId in column B and update column I (Status)
     const resp=await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/RawScan!A:J`,
+      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/rawscan!A:J`,
       {headers:{Authorization:`Bearer ${accessToken}`}}
     );
     const data=await resp.json();
@@ -604,7 +604,7 @@ async function updateRawScanStatus(scanId, status){
     const updates=[];
     rows.forEach((row,i)=>{
       if(row[1]===scanId){
-        updates.push({range:`RawScan!I${i+1}`,values:[[status]]});
+        updates.push({range:`rawscan!J${i+1}`,values:[[status]]});
       }
     });
     if(!updates.length) return;
@@ -706,7 +706,7 @@ async function fetchExistingAndCheck(){
   const sheetId=cfgSheet.value.trim();
   try{
     // Fetch Expenses cols A-F to get timestamp (col A) + date (col B) + item + amount + category
-    const resp=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Expenses!A:E`,{headers:{Authorization:`Bearer ${accessToken}`}});
+    const resp=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Expenses!A:F`,{headers:{Authorization:`Bearer ${accessToken}`}});
     const data=await resp.json();
     if(data.error) throw new Error(data.error.message);
     const rows=(data.values||[]).slice(1);
@@ -714,12 +714,12 @@ async function fetchExistingAndCheck(){
     to.setHours(23,59,59);
 
     existingRows=rows.map(r=>({
-      timestamp: parseSheetDate(r[0]),  // col A: full timestamp (has time component)
-      date:      parseSheetDate(r[1]),  // col B: purchase date
-      item:      (r[2]||'').trim().toLowerCase(),
-      amount:    parseFloat(r[3])||0,
-      category:  (r[4]||'').trim()
-    })).filter(r=>r.date>=from&&r.date<=to);
+      date:     parseSheetDate(r[1]),                        // col B: purchase date
+      txDT:     r[5] ? new Date(r[5]) : null,               // col F: full transaction datetime
+      item:     (r[2]||'').trim().toLowerCase(),
+      amount:   parseFloat(r[3])||0,
+      category: (r[4]||'').trim()
+    })).filter(r=>r.date && r.date>=from && r.date<=to);
 
     let exactCount=0,fuzzyCount=0;
 
@@ -731,47 +731,53 @@ async function fetchExistingAndCheck(){
       const txHasTime = !!(tx.datetime && !tx.datetime.endsWith('T00:00:00'));
 
       // ── EXACT DUPLICATE ──────────────────────────────────────
-      // Criteria: same amount + same item name (fuzzy) + same date + within 60 min
+      // CASE A — both have col F datetime: match within 60 min
+      // CASE B — sheet row has no col F (old entry): same date only, no time check
+      //          BUT require stronger name match to avoid false positives on
+      //          common items like Bus/MTR that repeat daily
       const exact = existingRows.find(r=>{
         if(Math.abs(r.amount - txAmt) >= 0.01) return false;
-        const nameMatch = similarity(r.item, txItem)>0.75 || r.item.includes(txItem) || txItem.includes(r.item);
+        const nameSim = similarity(r.item, txItem);
+        const nameMatch = nameSim>0.75 || r.item===txItem || txItem===r.item;
         if(!nameMatch) return false;
-        // Date must match exactly
         const sameDate = r.date.toDateString() === txDT.toDateString();
         if(!sameDate) return false;
-        // If we have time info, check within 60-minute window
-        if(txHasTime && r.timestamp && r.timestamp.getTime()>0){
-          const diffMin = Math.abs(r.timestamp - txDT) / 60000;
-          return diffMin <= 60;
+
+        if(txHasTime && r.txDT && !isNaN(r.txDT.getTime())){
+          // CASE A: both have datetime — must be within 60 min
+          return Math.abs(r.txDT - txDT) / 60000 <= 60;
         }
-        // No time info available — same date + same amount + same name = exact
+        // CASE B: old entry without col F datetime
+        // Only flag as exact if it's NOT a high-frequency repeating item
+        // High-freq items (bus/mtr/taxi) need strong name match AND no time = ambiguous, skip
+        const highFreq = /^(bus|mtr|taxi|minibus|light rail|tram)/i.test(r.item);
+        if(highFreq && txHasTime) return false; // scanned has time, sheet doesn't → can't confirm
         return true;
       });
 
       if(exact){
         tx.dupStatus='exact';
-        const timeStr = exact.timestamp && exact.timestamp.getTime()>0
-          ? fmtDateTime(exact.timestamp) : fmtDate(exact.date);
+        const timeStr = exact.txDT && !isNaN(exact.txDT.getTime())
+          ? fmtDateTime(exact.txDT) : fmtDate(exact.date);
         tx.dupMatch=exact.item+' · $'+exact.amount.toFixed(2)+' · '+timeStr;
         exactCount++;
         return;
       }
 
-      // ── FUZZY / SAME-DAY WARNING ──────────────────────────────
-      // Same item + same amount + same date but time differs > 60 min
-      // (possible re-entry, not a second legitimate trip)
+      // ── FUZZY WARNING ────────────────────────────────────────
+      // Both have col F datetime, same date, 1–8h apart → possible re-entry
       const fuzzy = existingRows.find(r=>{
         if(Math.abs(r.amount - txAmt) >= 0.01) return false;
-        const nameMatch = similarity(r.item, txItem)>0.65 || r.item.includes(txItem) || txItem.includes(r.item);
+        const nameMatch = similarity(r.item,txItem)>0.65 || r.item.includes(txItem) || txItem.includes(r.item);
         if(!nameMatch) return false;
         const sameDate = r.date.toDateString() === txDT.toDateString();
-        // Only warn same-day matches with > 60 min gap (different trips are fine)
-        if(sameDate && txHasTime && r.timestamp && r.timestamp.getTime()>0){
-          const diffMin = Math.abs(r.timestamp - txDT) / 60000;
-          return diffMin > 60 && diffMin < 480; // warn if 1-8 hours apart same day
+        if(!sameDate) return false;
+        // Only warn when BOTH have datetime — avoids false positives on old entries
+        if(txHasTime && r.txDT && !isNaN(r.txDT.getTime())){
+          const diffMin = Math.abs(r.txDT - txDT) / 60000;
+          return diffMin > 60 && diffMin < 480;
         }
-        // No time info: same date same name same amount = fuzzy
-        return sameDate && !txHasTime;
+        return false;
       });
 
       if(fuzzy){
@@ -806,7 +812,14 @@ function toInclude(){return scanned.filter(t=>t.dupStatus==='new'||t.forceInclud
 function updatePushCount(){const n=toInclude().length,dup=scanned.length-n;pushCount.textContent=`${n} new transaction${n!==1?'s':''} to push${dup>0?' · '+dup+' excluded':''}`;}
 function renderSummary(){const inc=toInclude(),totals={};CATS.forEach(c=>totals[c]=0);inc.forEach(t=>{if(totals[t.category]!==undefined)totals[t.category]+=t.amount;});sumGrid.innerHTML='';CATS.forEach(c=>{if(!totals[c])return;const d=document.createElement('div');d.className='sum-row';d.innerHTML=`<span class="k">${c}</span><span class="v">$${totals[c].toFixed(2)}</span>`;sumGrid.appendChild(d);});if(!sumGrid.children.length)sumGrid.innerHTML='<div class="sum-row"><span class="k" style="color:var(--muted2)">No new transactions</span></div>';updatePushCount();}
 btnPush.addEventListener('click',pushToSheets);
-async function pushToSheets(){if(!accessToken){toast('Connect to Google Sheets first','err');return;}const sheetId=cfgSheet.value.trim(),rows=toInclude();if(!rows.length){toast('No new transactions to push','warn');return;}btnPush.disabled=true;btnPush.textContent='↑ Pushing...';try{const now=new Date(),tsSerial=(now-new Date(1899,11,30))/86400000;const values=rows.map(tx=>{const d=tx.date?new Date(tx.date):now;const dateSerial=(d-new Date(1899,11,30))/86400000;return[tsSerial,dateSerial,tx.description,tx.amount,tx.category];});const resp=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Expenses!A:E:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,{method:'POST',headers:{Authorization:`Bearer ${accessToken}`,'Content-Type':'application/json'},body:JSON.stringify({majorDimension:'ROWS',values})});const data=await resp.json();if(data.error)throw new Error(data.error.message);toast(`✓ Pushed ${rows.length} transaction${rows.length!==1?'s':''} to Expenses sheet`,'ok');clearScanCache();if(window._lastScanId)updateRawScanStatus(window._lastScanId,'pushed');rows.forEach(t=>t.pushedAt=new Date().toLocaleTimeString());render();}catch(err){toast('Push failed: '+err.message,'err');}finally{btnPush.disabled=false;btnPush.textContent='↑ Push to Sheets';if(accessToken)btnPush.disabled=false;}}
+async function pushToSheets(){if(!accessToken){toast('Connect to Google Sheets first','err');return;}const sheetId=cfgSheet.value.trim(),rows=toInclude();if(!rows.length){toast('No new transactions to push','warn');return;}btnPush.disabled=true;btnPush.textContent='↑ Pushing...';try{const now=new Date(),tsSerial=(now-new Date(1899,11,30))/86400000;const values=rows.map(tx=>{const d=tx.date?new Date(tx.date):now;const dateSerial=(d-new Date(1899,11,30))/86400000;return[tsSerial,dateSerial,tx.description,tx.amount,tx.category,tx.datetime||tx.date||''];});const resp=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Expenses!A:F:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,{method:'POST',headers:{Authorization:`Bearer ${accessToken}`,'Content-Type':'application/json'},body:JSON.stringify({majorDimension:'ROWS',values})});const data=await resp.json();if(data.error)throw new Error(data.error.message);toast(`✓ Pushed ${rows.length} transaction${rows.length!==1?'s':''} to Expenses sheet`,'ok');
+      clearScanCache();
+      if(window._lastScanId){
+        updateRawScanStatus(window._lastScanId,'pushed',rows.map(t=>t.description));
+        const dupItems=scanned.filter(t=>(t.dupStatus==='exact'||t.dupStatus==='fuzzy')&&!t.forceInclude).map(t=>t.description);
+        if(dupItems.length) updateRawScanStatus(window._lastScanId,'skipped-dup',dupItems);
+      }
+      rows.forEach(t=>t.pushedAt=new Date().toLocaleTimeString());render();}catch(err){toast('Push failed: '+err.message,'err');}finally{btnPush.disabled=false;btnPush.textContent='↑ Push to Sheets';if(accessToken)btnPush.disabled=false;}}
 btnCsv.addEventListener('click',()=>{const rows=toInclude();if(!rows.length){toast('No new transactions to export','warn');return;}const header='Timestamp,Purchase Date,Item,Amount,Category';const csv=header+'\n'+rows.map(t=>[new Date().toISOString(),t.date||`"${t.description}"`,t.amount,t.category].join(',')).join('\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=`expenses_${dateFrom.value}_${dateTo.value}.csv`;a.click();});
 function toast(msg,type=''){const el=$('toast');el.textContent=msg;el.className='toast on'+(type?' '+type:'');setTimeout(()=>el.className='toast',3500);}
 document.addEventListener('DOMContentLoaded',()=>{
