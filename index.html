@@ -518,6 +518,56 @@ function loadScanCache(){try{const c=JSON.parse(localStorage.getItem(SCAN_CACHE_
 function clearScanCache(){try{localStorage.removeItem(SCAN_CACHE_KEY);}catch(e){}}
 
 // ── RAW SCAN BACKUP TO SHEETS ────────────────────────────────
+// ── SHEET COLOR CODING ───────────────────────────────────────
+const SHEET_COLORS={
+  pushed:     {red:0.851,green:0.918,blue:0.827},  // #d9ead3 green
+  pending:    {red:0.988,green:0.898,blue:0.804},  // #fce5cd orange
+  'skipped-dup':{red:0.957,green:0.800,blue:0.800} // #f4cccc red
+};
+
+async function colorSheetRows(sheetId, sheetName, rowIndices, status){
+  // rowIndices: 0-based array of row numbers to color
+  if(!rowIndices.length) return;
+  const color = SHEET_COLORS[status];
+  if(!color) return;
+
+  // Get sheetId (numeric) from spreadsheet metadata
+  let numericSheetId = null;
+  try{
+    const meta = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=sheets.properties`,
+      {headers:{Authorization:`Bearer ${accessToken}`}}
+    );
+    const metaData = await meta.json();
+    const sheet = (metaData.sheets||[]).find(s=>s.properties.title.toLowerCase()===sheetName.toLowerCase());
+    if(sheet) numericSheetId = sheet.properties.sheetId;
+  }catch(e){ console.warn('Could not get sheetId for coloring:', e.message); return; }
+  if(numericSheetId===null) return;
+
+  const requests = rowIndices.map(rowIdx=>({
+    repeatCell:{
+      range:{
+        sheetId: numericSheetId,
+        startRowIndex: rowIdx,
+        endRowIndex: rowIdx+1,
+        startColumnIndex: 0,
+        endColumnIndex: 26
+      },
+      cell:{ userEnteredFormat:{ backgroundColor: color } },
+      fields:'userEnteredFormat.backgroundColor'
+    }
+  }));
+
+  try{
+    await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`,
+      {method:'POST',
+       headers:{Authorization:`Bearer ${accessToken}`,'Content-Type':'application/json'},
+       body:JSON.stringify({requests})}
+    );
+  }catch(e){ console.warn('Color update failed:', e.message); }
+}
+
 async function saveToRawScan(transactions, modelUsed){
   if(!accessToken||!cfgSheet.value.trim()) return;
   const sheetId=cfgSheet.value.trim();
@@ -562,6 +612,16 @@ async function saveToRawScan(transactions, modelUsed){
            body:JSON.stringify({majorDimension:'ROWS',values:rows})}
         );
       }
+    }
+    // Color new rawscan rows orange (pending)
+    const appendedRange = data?.updates?.updatedRange||'';
+    // updatedRange looks like "rawscan!A5:J9" — extract start row
+    const rangeMatch = appendedRange.match(/!(\w+)(\d+):(\w+)(\d+)/);
+    if(rangeMatch){
+      const startRow = parseInt(rangeMatch[2])-1; // 0-based
+      const endRow   = parseInt(rangeMatch[4]);
+      const rowIdxs  = Array.from({length:endRow-startRow},(_,i)=>startRow+i);
+      colorSheetRows(sheetId,'rawscan',rowIdxs,'pending').catch(()=>{});
     }
     return scanId;
   }catch(e){
@@ -608,12 +668,19 @@ async function updateRawScanStatus(scanId, status, itemFilter=null){
       }
     });
     if(!updates.length) return;
+    // Update status text values
     await fetch(
       `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`,
       {method:'POST',
        headers:{Authorization:`Bearer ${accessToken}`,'Content-Type':'application/json'},
        body:JSON.stringify({valueInputOption:'USER_ENTERED',data:updates})}
     );
+    // Recolor rows to match new status
+    const rowIdxs = updates.map(u=>{
+      const m = u.range.match(/J(\d+)/);
+      return m ? parseInt(m[1])-1 : -1;
+    }).filter(i=>i>=0);
+    if(rowIdxs.length) colorSheetRows(sheetId,'rawscan',rowIdxs,status).catch(()=>{});
   }catch(e){console.warn('RawScan status update failed:',e.message);}
 }
 
@@ -738,7 +805,8 @@ async function fetchExistingAndCheck(){
       const exact = existingRows.find(r=>{
         if(Math.abs(r.amount - txAmt) >= 0.01) return false;
         const nameSim = similarity(r.item, txItem);
-        const nameMatch = nameSim>0.75 || r.item===txItem || txItem===r.item;
+        // includes() catches truncated merchant names e.g. "GOHYANGHWETJIB" vs "GOHYANGHWETJIB BUSAN KOR"
+        const nameMatch = nameSim>0.72 || r.item.includes(txItem) || txItem.includes(r.item);
         if(!nameMatch) return false;
         const sameDate = r.date.toDateString() === txDT.toDateString();
         if(!sameDate) return false;
@@ -748,10 +816,10 @@ async function fetchExistingAndCheck(){
           return Math.abs(r.txDT - txDT) / 60000 <= 60;
         }
         // CASE B: old entry without col F datetime
-        // Only flag as exact if it's NOT a high-frequency repeating item
-        // High-freq items (bus/mtr/taxi) need strong name match AND no time = ambiguous, skip
-        const highFreq = /^(bus|mtr|taxi|minibus|light rail|tram)/i.test(r.item);
-        if(highFreq && txHasTime) return false; // scanned has time, sheet doesn't → can't confirm
+        // If scanned entry HAS a time but sheet row has none, we can't confirm it's
+        // the same transaction — downgrade to fuzzy warning instead of exact block.
+        if(txHasTime) return false;
+        // Neither side has time → same date + name + amount is good enough for exact
         return true;
       });
 
@@ -772,11 +840,14 @@ async function fetchExistingAndCheck(){
         if(!nameMatch) return false;
         const sameDate = r.date.toDateString() === txDT.toDateString();
         if(!sameDate) return false;
-        // Only warn when BOTH have datetime — avoids false positives on old entries
+        // CASE A: both have datetime → warn if 1–8h apart (possible re-entry)
         if(txHasTime && r.txDT && !isNaN(r.txDT.getTime())){
           const diffMin = Math.abs(r.txDT - txDT) / 60000;
           return diffMin > 60 && diffMin < 480;
         }
+        // CASE B: scanned has time, sheet row has no col F (old entry)
+        // Can't confirm time-wise → show as fuzzy warning so user can decide
+        if(txHasTime && !r.txDT) return true;
         return false;
       });
 
@@ -812,7 +883,16 @@ function toInclude(){return scanned.filter(t=>t.dupStatus==='new'||t.forceInclud
 function updatePushCount(){const n=toInclude().length,dup=scanned.length-n;pushCount.textContent=`${n} new transaction${n!==1?'s':''} to push${dup>0?' · '+dup+' excluded':''}`;}
 function renderSummary(){const inc=toInclude(),totals={};CATS.forEach(c=>totals[c]=0);inc.forEach(t=>{if(totals[t.category]!==undefined)totals[t.category]+=t.amount;});sumGrid.innerHTML='';CATS.forEach(c=>{if(!totals[c])return;const d=document.createElement('div');d.className='sum-row';d.innerHTML=`<span class="k">${c}</span><span class="v">$${totals[c].toFixed(2)}</span>`;sumGrid.appendChild(d);});if(!sumGrid.children.length)sumGrid.innerHTML='<div class="sum-row"><span class="k" style="color:var(--muted2)">No new transactions</span></div>';updatePushCount();}
 btnPush.addEventListener('click',pushToSheets);
-async function pushToSheets(){if(!accessToken){toast('Connect to Google Sheets first','err');return;}const sheetId=cfgSheet.value.trim(),rows=toInclude();if(!rows.length){toast('No new transactions to push','warn');return;}btnPush.disabled=true;btnPush.textContent='↑ Pushing...';try{const now=new Date(),tsSerial=(now-new Date(1899,11,30))/86400000;const values=rows.map(tx=>{const d=tx.date?new Date(tx.date):now;const dateSerial=(d-new Date(1899,11,30))/86400000;return[tsSerial,dateSerial,tx.description,tx.amount,tx.category,tx.datetime||tx.date||''];});const resp=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Expenses!A:F:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,{method:'POST',headers:{Authorization:`Bearer ${accessToken}`,'Content-Type':'application/json'},body:JSON.stringify({majorDimension:'ROWS',values})});const data=await resp.json();if(data.error)throw new Error(data.error.message);toast(`✓ Pushed ${rows.length} transaction${rows.length!==1?'s':''} to Expenses sheet`,'ok');
+async function pushToSheets(){if(!accessToken){toast('Connect to Google Sheets first','err');return;}const sheetId=cfgSheet.value.trim(),rows=toInclude();if(!rows.length){toast('No new transactions to push','warn');return;}btnPush.disabled=true;btnPush.textContent='↑ Pushing...';try{const now=new Date(),tsSerial=(now-new Date(1899,11,30))/86400000;const values=rows.map(tx=>{const d=tx.date?new Date(tx.date):now;const dateSerial=(d-new Date(1899,11,30))/86400000;return[tsSerial,dateSerial,tx.description,tx.amount,tx.category,tx.datetime||tx.date||''];});const resp=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Expenses!A:F:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,{method:'POST',headers:{Authorization:`Bearer ${accessToken}`,'Content-Type':'application/json'},body:JSON.stringify({majorDimension:'ROWS',values})});const data=await resp.json();if(data.error)throw new Error(data.error.message);// Color pushed Expenses rows green
+    const expRange = pushData?.updates?.updatedRange||'';
+    const expMatch = expRange.match(/!\w+(\d+):\w+(\d+)/);
+    if(expMatch){
+      const startRow = parseInt(expMatch[1])-1;
+      const endRow   = parseInt(expMatch[2]);
+      const rowIdxs  = Array.from({length:endRow-startRow},(_,i)=>startRow+i);
+      colorSheetRows(sheetId,'Expenses',rowIdxs,'pushed').catch(()=>{});
+    }
+    toast(`✓ Pushed ${rows.length} transaction${rows.length!==1?'s':''} to Expenses sheet`,'ok');
       clearScanCache();
       if(window._lastScanId){
         updateRawScanStatus(window._lastScanId,'pushed',rows.map(t=>t.description));
