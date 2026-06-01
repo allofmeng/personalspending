@@ -66,6 +66,37 @@
     .btn-scan-toggle.ollama { background:var(--purple); border-left-color:rgba(0,0,0,0.2); }
     .btn-scan.ollama { background:var(--purple); }
     .scan-mode-tip { font-size:0.6rem; color:var(--muted); text-align:center; margin-top:0.3rem; }
+
+    /* input mode tabs */
+    .mode-tabs { display:flex; gap:0; border:1px solid var(--border); border-radius:6px; overflow:hidden; margin-bottom:0.75rem; }
+    .mode-tab { flex:1; padding:0.45rem 0.5rem; background:var(--surface); color:var(--muted); border:none; font-family:'DM Mono',monospace; font-size:0.65rem; cursor:pointer; transition:background 0.15s,color 0.15s; text-align:center; border-right:1px solid var(--border); }
+    .mode-tab:last-child { border-right:none; }
+    .mode-tab.active { background:var(--surface2); color:var(--text); }
+    .mode-tab:hover:not(.active) { color:var(--accent); }
+
+    /* paste panel */
+    .paste-panel { display:none; flex-direction:column; gap:0.6rem; }
+    .paste-panel.visible { display:flex; }
+    .paste-box {
+      background:var(--surface); border:1.5px dashed var(--border); border-radius:7px;
+      padding:0.75rem; min-height:140px; resize:vertical;
+      color:var(--text); font-family:'DM Mono',monospace; font-size:0.7rem;
+      line-height:1.6; outline:none; width:100%; transition:border-color 0.2s;
+    }
+    .paste-box:focus { border-color:var(--accent); }
+    .paste-box::placeholder { color:var(--muted2); }
+    .btn-paste-load {
+      padding:0.8rem; background:var(--accent); color:#0b0d0f;
+      border:none; border-radius:6px;
+      font-family:'Fraunces',serif; font-size:1rem; font-weight:600;
+      cursor:pointer; transition:opacity 0.2s;
+      display:flex; align-items:center; justify-content:center; gap:0.4rem;
+    }
+    .btn-paste-load:hover { opacity:0.88; }
+    .btn-paste-load:disabled { opacity:0.3; cursor:not-allowed; }
+    .paste-hint { font-size:0.6rem; color:var(--muted); line-height:1.8; padding:0.6rem 0.75rem; background:var(--surface); border-radius:5px; border:1px solid var(--border); }
+    .paste-hint strong { color:var(--muted2); display:block; margin-bottom:0.2rem; }
+    .paste-hint code { color:var(--accent); }
     .progress { display:none; flex-direction:column; gap:0.4rem; }
     .progress.on { display:flex; }
     .prog-track { height:2px; background:var(--border); border-radius:2px; overflow:hidden; }
@@ -164,18 +195,41 @@
 <main>
   <div class="left">
     <div>
-      <span class="slabel">01 — Upload Screenshot</span>
-      <!-- hidden file input lives outside the dropzone so click is reliable -->
-      <input type="file" id="fileInp" accept="image/*" style="display:none" />
-      <div class="dropzone" id="dropzone">
-        <span class="di">📱</span>
-        <p><strong>Drop screenshot here</strong><br/>or <span style="color:var(--accent);text-decoration:underline;cursor:pointer">click to browse</span><br/><span style="color:var(--muted2);font-size:0.67rem">Bank app · Payment app · Receipt</span></p>
+      <span class="slabel">01 — Input Method</span>
+      <div class="mode-tabs">
+        <button class="mode-tab active" id="tabUpload">📱 Upload & Scan</button>
+        <button class="mode-tab" id="tabPaste">✦ Paste from Claude</button>
       </div>
-      <div class="preview" id="previewWrap" style="display:none">
-        <img id="previewImg" src="" alt="" />
-        <button class="preview-rm" id="btnRemove">✕</button>
+
+      <!-- UPLOAD PANEL -->
+      <div id="uploadPanel">
+        <!-- hidden file input lives outside the dropzone so click is reliable -->
+        <input type="file" id="fileInp" accept="image/*" style="display:none" />
+        <div class="dropzone" id="dropzone">
+          <span class="di">📱</span>
+          <p><strong>Drop screenshot here</strong><br/>or <span style="color:var(--accent);text-decoration:underline;cursor:pointer">click to browse</span><br/><span style="color:var(--muted2);font-size:0.67rem">Bank app · Payment app · Receipt</span></p>
+        </div>
+        <div class="preview" id="previewWrap" style="display:none">
+          <img id="previewImg" src="" alt="" />
+          <button class="preview-rm" id="btnRemove">✕</button>
+        </div>
+      </div>
+
+      <!-- PASTE PANEL -->
+      <div class="paste-panel" id="pastePanel">
+        <div class="paste-hint">
+          <strong>✦ How to use Claude vision</strong>
+          1. Upload your screenshot <strong>in this Claude chat</strong><br/>
+          2. Ask: <code>"extract transactions as JSON"</code><br/>
+          3. Copy the JSON array Claude returns<br/>
+          4. Paste it below and click Load
+        </div>
+        <textarea class="paste-box" id="pasteBox" placeholder='Paste Claude JSON output here...&#10;&#10;Example:&#10;[{"description":"KMB / LWB","amount":11.5,"type":"expense","category":"Transport","date":"2026-04-13","datetime":"2026-04-13T08:44:00"}]'></textarea>
+        <button class="btn-paste-load" id="btnPasteLoad">Load Transactions →</button>
+        <div class="errmsg" id="pasteErr"></div>
       </div>
     </div>
+
     <div>
       <span class="slabel">02 — Transaction Date Range</span>
       <div class="date-row">
@@ -190,15 +244,17 @@
       Fix: start Ollama with <code style="color:var(--accent)">OLLAMA_ORIGINS=https://yourusername.github.io ollama serve</code><br/>
       Or run the app locally via <code style="color:var(--accent)">python3 -m http.server</code> for Ollama to work.
     </div>
-    <div class="scan-wrap">
-      <button class="btn-scan" id="btnScan" disabled>
-        <span id="btnScanLabel">Scan with Gemini</span><span>→</span>
-      </button>
-      <button class="btn-scan-toggle" id="btnScanToggle" title="Switch scan engine">
-        <span id="btnScanToggleIcon">🤖</span>
-      </button>
+    <div id="scanControls">
+      <div class="scan-wrap">
+        <button class="btn-scan" id="btnScan" disabled>
+          <span id="btnScanLabel">Scan with Gemini</span><span>→</span>
+        </button>
+        <button class="btn-scan-toggle" id="btnScanToggle" title="Switch scan engine">
+          <span id="btnScanToggleIcon">🤖</span>
+        </button>
+      </div>
+      <div class="scan-mode-tip" id="scanModeTip">Using Gemini (cloud) · click 🤖 to switch</div>
     </div>
-    <div class="scan-mode-tip" id="scanModeTip">Using Gemini (cloud) · click 🤖 to switch</div>
     <button id="btnRestore" style="display:none;padding:0.45rem 1rem;background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:5px;font-family:'DM Mono',monospace;font-size:0.7rem;cursor:pointer;transition:border-color 0.2s,color 0.2s;" onmouseover="this.style.borderColor='var(--yellow)';this.style.color='var(--yellow)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">↩ restore last scan</button>
     <div class="progress" id="progress">
       <div class="prog-track"><div class="prog-fill"></div></div>
@@ -897,6 +953,68 @@ async function pushToSheets(){if(!accessToken){toast('Connect to Google Sheets f
 btnCsv.addEventListener('click',()=>{const rows=toInclude();if(!rows.length){toast('No new transactions to export','warn');return;}const header='Timestamp,Purchase Date,Item,Amount,Category';const csv=header+'\n'+rows.map(t=>[new Date().toISOString(),t.date||`"${t.description}"`,t.amount,t.category].join(',')).join('\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=`expenses_${dateFrom.value}_${dateTo.value}.csv`;a.click();});
 function toast(msg,type=''){const el=$('toast');el.textContent=msg;el.className='toast on'+(type?' '+type:'');setTimeout(()=>el.className='toast',3500);}
 document.addEventListener('DOMContentLoaded',()=>{
+  // ── INPUT MODE TABS ───────────────────────────────────────
+  const tabUpload   = document.getElementById('tabUpload');
+  const tabPaste    = document.getElementById('tabPaste');
+  const uploadPanel = document.getElementById('uploadPanel');
+  const pastePanel  = document.getElementById('pastePanel');
+  const scanControls= document.getElementById('scanControls');
+
+  function setTab(mode){
+    if(mode==='upload'){
+      tabUpload.classList.add('active');   tabPaste.classList.remove('active');
+      uploadPanel.style.display='';       pastePanel.classList.remove('visible');
+      scanControls.style.display='';
+    } else {
+      tabPaste.classList.add('active');    tabUpload.classList.remove('active');
+      uploadPanel.style.display='none';   pastePanel.classList.add('visible');
+      scanControls.style.display='none';
+    }
+  }
+  tabUpload.addEventListener('click',()=>setTab('upload'));
+  tabPaste.addEventListener('click', ()=>setTab('paste'));
+
+  // ── PASTE LOAD ────────────────────────────────────────────
+  const pasteBox  = document.getElementById('pasteBox');
+  const pasteErr  = document.getElementById('pasteErr');
+  const btnPasteLoad = document.getElementById('btnPasteLoad');
+
+  btnPasteLoad.addEventListener('click', async ()=>{
+    pasteErr.classList.remove('on');
+    const raw = pasteBox.value.trim();
+    if(!raw){ pasteErr.textContent='Please paste some JSON first.'; pasteErr.classList.add('on'); return; }
+    try{
+      const parsed = extractJSON(raw);
+      if(!Array.isArray(parsed)||!parsed.length) throw new Error('Expected a JSON array with at least one transaction');
+      scanned = parsed.map(t=>({
+        description: t.description||t.item||t.name||'Unknown',
+        amount:      Math.abs(parseFloat(t.amount)||0),
+        type:        t.type||'expense',
+        category:    t.category||'Shopping',
+        date:        t.date||new Date().toISOString().split('T')[0],
+        datetime:    t.datetime||t.date||null,
+        dupStatus:   'new',
+        forceInclude:false
+      }));
+      // Save to cache same as scan
+      saveScanCache(scanned);
+      // Backup to rawscan sheet
+      if(accessToken){
+        const scanId = await saveToRawScan(scanned,'claude-vision-paste');
+        if(scanId) window._lastScanId=scanId;
+      }
+      // Run dedup if connected
+      if(accessToken&&dateFrom.value&&dateTo.value){
+        await fetchExistingAndCheck();
+      } else {
+        render();
+      }
+      toast(`Loaded ${scanned.length} transaction${scanned.length!==1?'s':''} from paste`,'ok');
+    }catch(e){
+      pasteErr.textContent='Could not parse JSON: '+e.message;
+      pasteErr.classList.add('on');
+    }
+  });
   // Ollama test button
   const testBtn=document.getElementById('btnTestOllama');
   if(testBtn) testBtn.addEventListener('click', testOllamaConnection);
